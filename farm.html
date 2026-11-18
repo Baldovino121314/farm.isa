@@ -1,0 +1,686 @@
+-- Candy Farm Isaias v67
+local P=game:GetService("Players").LocalPlayer
+local PLS=game:GetService("Players")
+local TS=game:GetService("TweenService")
+local VU=game:GetService("VirtualUser")
+local UIS=game:GetService("UserInputService")
+local WS=game:GetService("Workspace")
+local R2=game:GetService("ReplicatedStorage")
+local cam=WS.CurrentCamera
+local pg=P:WaitForChild("PlayerGui")
+local farm,ug,afk,shootOn,esp,resetOn=false,false,false,false,true,true
+local aura,aim,grabG=false,false,false
+local auraRange,fov=20,170
+local speed,total,roundC,bagMax,got=20,0,0,0,0
+local t0,ugApp,busy,mini,drop=os.clock(),false,false,false,false
+local resetAt,cont,gdC,gdT,est=0,nil,nil,0,"-"
+local skip,cList,cAt={},{},0
+local ROT=CFrame.Angles(math.rad(90),0,0)
+local sg,sbtn,main,lbl,body
+local function cc()
+  if cont and cont.Parent then return cont end
+  cont=WS:FindFirstChild("CoinContainer",true)
+  return cont
+end
+local function gunDrop()
+  if gdC and gdC.Parent then return gdC end
+  if os.clock()-gdT<2 then return gdC end
+  gdT=os.clock() gdC=WS:FindFirstChild("GunDrop",true)
+  return gdC
+end
+local function alive()
+  local c=P.Character
+  local h=c and c:FindFirstChildOfClass("Humanoid")
+  return h and h.Health>0
+end
+local function doReset()
+  if not resetOn then return end
+  if os.clock()-resetAt<3 then return end
+  resetAt=os.clock()
+  local c=P.Character
+  if not c then return end
+  got=0 roundC=0 bagMax=0
+  skip={} cList={} cAt=0
+  est="reiniciando"
+  local h=c:FindFirstChildOfClass("Humanoid")
+  if h then
+    h.PlatformStand=false
+    pcall(function() h.Health=0 end)
+  end
+  pcall(function() c:BreakJoints() end)
+  local n=0
+  while P.Character==c and n<6 do
+    task.wait(0.1)
+    n=n+0.1
+  end
+  if P.Character then
+    pcall(function() P.Character:WaitForChild("HumanoidRootPart",5) end)
+    task.wait(0.4)
+  end
+  ugApp=false
+  est="esperando ronda"
+end
+local function coins()
+  if os.clock()-cAt<0.25 then return cList end
+  cAt=os.clock()
+  local t,c={},cc()
+  if c then
+    for _,m in ipairs(c:GetChildren()) do
+      local p
+      if m:IsA("BasePart") then p=m
+      elseif m:IsA("Model") then
+        p=m:FindFirstChild("Coin_Server") or m.PrimaryPart
+          or m:FindFirstChildWhichIsA("BasePart")
+      end
+      if p and m:GetAttribute("Collected")~=true then t[#t+1]=p end
+    end
+  end
+  cList=t
+  return t
+end
+local function nearest()
+  local c=P.Character local hrp=c and c:FindFirstChild("HumanoidRootPart")
+  if not hrp then return end
+  local b,bd
+  for _,p in ipairs(coins()) do
+    local s=skip[p]
+    if not s or os.clock()-s>1.5 then
+      local d=(p.Position-hrp.Position).Magnitude
+      if not bd or d<bd then b,bd=p,d end
+    end
+  end
+  return b,bd
+end
+local function inRound()
+  if not alive() then return false end
+  local _,d=nearest()
+  return d~=nil and d<150
+end
+local function touch(p)
+  local c=P.Character
+  if not c or not p.Parent then return end
+  local hrp=c:FindFirstChild("HumanoidRootPart") local hd=c:FindFirstChild("Head")
+  if not hrp then return end
+  pcall(function()
+    firetouchinterest(hrp,p,0) firetouchinterest(hrp,p,1)
+    if hd then firetouchinterest(hd,p,0) firetouchinterest(hd,p,1) end
+  end)
+end
+local function grab(p)
+  for i=1,4 do
+    touch(p)
+    if p:GetAttribute("Collected")==true then break end
+    task.wait(0.05)
+  end
+  if p:GetAttribute("Collected")==true or p.Parent==nil then got=got+1 end
+  skip[p]=os.clock()
+  if resetOn and got>=50 then doReset() end
+end
+local function ugMode(on)
+  if on==ugApp then return end
+  ugApp=on
+  local c=P.Character
+  if not c then return end
+  local h=c:FindFirstChildOfClass("Humanoid")
+  if h then h.PlatformStand=on end
+  for _,v in ipairs(c:GetDescendants()) do
+    if v:IsA("BasePart") then v.CanCollide=not on end
+  end
+end
+local function glide(dest,rot,dur)
+  local c=P.Character local hrp=c and c:FindFirstChild("HumanoidRootPart")
+  if not hrp then return false end
+  local d=(dest-hrp.Position).Magnitude
+  if d<0.5 then return true end
+  if not dur then dur=math.clamp(d/speed,0.12,2.5) end
+  local ti=TS:Create(hrp,TweenInfo.new(dur,Enum.EasingStyle.Linear),
+    {CFrame=CFrame.new(dest)*(rot or ROT)})
+  ti:Play()
+  ti.Completed:Wait()
+  if hrp.Parent then
+    hrp.AssemblyLinearVelocity=Vector3.zero
+    hrp.AssemblyAngularVelocity=Vector3.zero
+  end
+  return true
+end
+local function goTo(pos)
+  glide(pos+Vector3.new(0,3,0),CFrame.new().Rotation)
+end
+local function farmLoop()
+  while farm do
+    if not inRound() then est="esperando ronda" ugMode(false) task.wait(0.4)
+    else
+      local p=nearest()
+      if not p then
+        est="sin caramelos"
+        cAt=0
+        skip={}
+        task.wait(0.05)
+      elseif ug then
+        est="underground" ugMode(true)
+        glide(Vector3.new(p.Position.X,p.Position.Y-4,p.Position.Z))
+        grab(p)
+      else
+        est="moviendo" ugMode(false) goTo(p.Position) grab(p)
+      end
+    end
+  end
+  est="-"
+end
+local function knife(pl)
+  local c=pl.Character
+  local b=pl:FindFirstChild("Backpack")
+  return (c and c:FindFirstChild("Knife"))
+    or (b and b:FindFirstChild("Knife"))
+end
+local function murderer()
+  for _,pl in ipairs(PLS:GetPlayers()) do
+    if pl~=P and pl.Character and knife(pl) then return pl end
+  end
+end
+local function gun()
+  local c=P.Character
+  local b=P:FindFirstChild("Backpack")
+  return (c and c:FindFirstChild("Gun"))
+    or (b and b:FindFirstChild("Gun"))
+end
+local function shoot()
+  if busy then return end
+  busy=true
+  pcall(function()
+    local m=murderer()
+    if not m then print("SIN MURDER") return end
+    local g=gun()
+    if not g then print("SIN PISTOLA") return end
+    local c=P.Character
+    local h=c and c:FindFirstChildOfClass("Humanoid")
+    local hrp=c and c:FindFirstChild("HumanoidRootPart")
+    local mc=m.Character
+    local tp=mc and (mc:FindFirstChild("HumanoidRootPart")
+      or mc:FindFirstChild("Head"))
+    if not h or not hrp or not tp then print("SIN CUERPO") return end
+    if g.Parent~=c then pcall(function() h:EquipTool(g) end) end
+    local t=0
+    while g.Parent~=c and t<1.5 do
+      task.wait(0.05)
+      t=t+0.05
+    end
+    if g.Parent~=c then print("NO EQUIPA") return end
+    local sh=g:FindFirstChild("Shoot")
+    if not sh then print("SIN REMOTO") return end
+    local at=nil
+    t=0
+    while not at and t<1.5 do
+      at=hrp:FindFirstChild("GunRaycastAttachment")
+      if not at then
+        task.wait(0.05)
+        t=t+0.05
+      end
+    end
+    if not at then print("SIN ATTACHMENT") return end
+    task.wait(0.1)
+    for i=1,3 do
+      local pos=tp.Position+Vector3.new(0,0.5,0)
+        +tp.AssemblyLinearVelocity*0.12
+      pcall(function()
+        sh:FireServer(at.WorldCFrame,CFrame.new(pos))
+      end)
+      task.wait(0.15)
+    end
+    task.wait(0.1)
+    pcall(function() h:UnequipTools() end)
+  end)
+  busy=false
+end
+local function knifeMine()
+  local c=P.Character
+  local h=c and c:FindFirstChildOfClass("Humanoid")
+  if not c or not h then return end
+  local k=c:FindFirstChild("Knife")
+  if k then return k end
+  local b=P:FindFirstChild("Backpack")
+  local kb=b and b:FindFirstChild("Knife")
+  if kb then
+    pcall(function() h:EquipTool(kb) end)
+    task.wait(0.05)
+    if kb.Parent==c then return kb end
+  end
+end
+local function killAura()
+  if not alive() then return end
+  local k=knifeMine()
+  if not k then return end
+  local handle=k:FindFirstChild("Handle")
+  local hrp=P.Character:FindFirstChild("HumanoidRootPart")
+  if not handle or not hrp then return end
+  for _,pl in ipairs(PLS:GetPlayers()) do
+    if pl~=P and pl.Character then
+      local th=pl.Character:FindFirstChild("HumanoidRootPart")
+      local hh=pl.Character:FindFirstChildOfClass("Humanoid")
+      if th and hh and hh.Health>0 then
+        if (th.Position-hrp.Position).Magnitude<=auraRange then
+          pcall(function() k:Activate() end)
+          pcall(function()
+            firetouchinterest(th,handle,0)
+            firetouchinterest(th,handle,1)
+          end)
+        end
+      end
+    end
+  end
+end
+local function inFov(pl)
+  local c=pl.Character
+  local head=c and (c:FindFirstChild("Head") or c:FindFirstChild("HumanoidRootPart"))
+  if not head then return false end
+  local sp,on=cam:WorldToViewportPoint(head.Position)
+  if not on then return false end
+  local vp=cam.ViewportSize
+  local d=(Vector2.new(sp.X,sp.Y)-Vector2.new(vp.X/2,vp.Y/2)).Magnitude
+  return d<=fov
+end
+local function aimTarget()
+  local best,bd
+  for _,pl in ipairs(PLS:GetPlayers()) do
+    if pl~=P and pl.Character and knife(pl) then
+      if inFov(pl) then
+        local c=P.Character
+        local hrp=c and c:FindFirstChild("HumanoidRootPart")
+        local th=pl.Character:FindFirstChild("HumanoidRootPart")
+        if hrp and th then
+          local d=(th.Position-hrp.Position).Magnitude
+          if not bd or d<bd then best,bd=pl,d end
+        end
+      end
+    end
+  end
+  return best
+end
+local function aimShot()
+  if busy then return end
+  busy=true
+  pcall(function()
+    local m=aimTarget()
+    if not m then print("FUERA DE FOV") return end
+    local g=gun()
+    if not g then print("SIN PISTOLA") return end
+    local c=P.Character
+    local h=c and c:FindFirstChildOfClass("Humanoid")
+    local hrp=c and c:FindFirstChild("HumanoidRootPart")
+    local mc=m.Character
+    local mh=mc and mc:FindFirstChild("Head")
+    local mhp=mc and mc:FindFirstChild("HumanoidRootPart")
+    if not h or not hrp or not mh or not mhp then return end
+    if g.Parent~=c then pcall(function() h:EquipTool(g) end) end
+    local t=0
+    while g.Parent~=c and t<1.5 do
+      task.wait(0.05)
+      t=t+0.05
+    end
+    if g.Parent~=c then print("NO EQUIPA") return end
+    local sh=g:FindFirstChild("Shoot")
+    if not sh then print("SIN REMOTO") return end
+    local at=nil
+    t=0
+    while not at and t<1.5 do
+      at=hrp:FindFirstChild("GunRaycastAttachment")
+      if not at then
+        task.wait(0.05)
+        t=t+0.05
+      end
+    end
+    if not at then print("SIN ATTACHMENT") return end
+    task.wait(0.08)
+    local pos=mh.Position+mhp.AssemblyLinearVelocity*0.12
+    if sh:IsA("RemoteFunction") then
+      pcall(function() sh:InvokeServer(1,pos,"AH2") end)
+    else
+      pcall(function() sh:FireServer(at.WorldCFrame,CFrame.new(pos)) end)
+    end
+    task.wait(0.12)
+    pcall(function() h:UnequipTools() end)
+  end)
+  busy=false
+end
+local function grabGun()
+  if busy then return end
+  local gd=gunDrop()
+  if not gd or not gd:IsA("BasePart") then return end
+  local c=P.Character
+  local hrp=c and c:FindFirstChild("HumanoidRootPart")
+  if not hrp then return end
+  if (gd.Position-hrp.Position).Magnitude>130 then return end
+  busy=true
+  local keep=hrp.CFrame
+  hrp.CFrame=CFrame.new(gd.Position+Vector3.new(0,1.5,0))
+  hrp.AssemblyLinearVelocity=Vector3.zero
+  task.wait(0.06)
+  pcall(function()
+    firetouchinterest(hrp,gd,0)
+    firetouchinterest(hrp,gd,1)
+  end)
+  task.wait(0.18)
+  if hrp.Parent then
+    hrp.CFrame=keep
+    hrp.AssemblyLinearVelocity=Vector3.zero
+  end
+  busy=false
+end
+sg=Instance.new("ScreenGui")
+sg.Name="CandyFarmIsaias" sg.ResetOnSpawn=false
+sg.IgnoreGuiInset=true sg.Parent=pg
+local function rn(o,r)
+  local u=Instance.new("UICorner") u.CornerRadius=UDim.new(0,r) u.Parent=o
+end
+main=Instance.new("Frame")
+main.Size=UDim2.new(0,236,0,430) main.Position=UDim2.new(0,10,0,60)
+main.BackgroundColor3=Color3.fromRGB(16,16,21) main.BorderSizePixel=0
+main.Parent=sg
+rn(main,12)
+local stk=Instance.new("UIStroke")
+stk.Color=Color3.fromRGB(255,170,50) stk.Thickness=1.2 stk.Transparency=0.4
+stk.Parent=main
+local head=Instance.new("Frame")
+head.Size=UDim2.new(1,0,0,38) head.BackgroundColor3=Color3.fromRGB(24,20,14)
+head.BorderSizePixel=0 head.Parent=main
+rn(head,12)
+local hfix=Instance.new("Frame")
+hfix.Size=UDim2.new(1,0,0,12) hfix.Position=UDim2.new(0,0,1,-12)
+hfix.BackgroundColor3=Color3.fromRGB(24,20,14) hfix.BorderSizePixel=0
+hfix.Parent=head
+local title=Instance.new("TextLabel")
+title.Size=UDim2.new(1,-70,0,38) title.Position=UDim2.new(0,12,0,0)
+title.BackgroundTransparency=1 title.Font=Enum.Font.GothamBold
+title.TextSize=14 title.TextColor3=Color3.fromRGB(255,180,60)
+title.TextXAlignment=Enum.TextXAlignment.Left
+title.Text="CANDY FARM ISAIAS" title.Parent=head
+local dot=Instance.new("Frame")
+dot.Size=UDim2.new(0,8,0,8) dot.Position=UDim2.new(0,6,0,15)
+dot.BackgroundColor3=Color3.fromRGB(255,170,50) dot.BorderSizePixel=0 dot.Parent=head
+rn(dot,99)
+local minb=Instance.new("TextButton")
+minb.Size=UDim2.new(0,22,0,22) minb.Position=UDim2.new(1,-52,0,8)
+minb.BackgroundColor3=Color3.fromRGB(42,38,30) minb.TextColor3=Color3.fromRGB(230,220,200)
+minb.Font=Enum.Font.GothamBold minb.TextSize=13 minb.Text="-"
+minb.BorderSizePixel=0 minb.AutoButtonColor=false minb.Parent=head
+rn(minb,6)
+lbl=Instance.new("TextLabel")
+lbl.Size=UDim2.new(1,-24,0,40) lbl.Position=UDim2.new(0,12,0,44)
+lbl.BackgroundColor3=Color3.fromRGB(22,22,28) lbl.BackgroundTransparency=0.25
+lbl.Font=Enum.Font.Code lbl.TextSize=10
+lbl.TextColor3=Color3.fromRGB(150,200,170) lbl.TextXAlignment=Enum.TextXAlignment.Left
+lbl.TextYAlignment=Enum.TextYAlignment.Center
+lbl.Text="  00:00:00  |  Ronda 0  |  Total 0\n  estado: -"
+lbl.Parent=main
+rn(lbl,8)
+body=Instance.new("ScrollingFrame")
+body.Size=UDim2.new(1,-20,1,-140) body.Position=UDim2.new(0,10,0,92)
+body.BackgroundTransparency=1 body.BorderSizePixel=0 body.ScrollBarThickness=3
+body.ScrollBarImageColor3=Color3.fromRGB(255,170,50)
+body.CanvasSize=UDim2.new(0,0,0,0)
+body.AutomaticCanvasSize=Enum.AutomaticSize.Y
+body.Parent=main
+local lay=Instance.new("UIListLayout")
+lay.Padding=UDim.new(0,4) lay.SortOrder=Enum.SortOrder.LayoutOrder lay.Parent=body
+local function sec(txt,ord)
+  local l=Instance.new("TextLabel")
+  l.Size=UDim2.new(1,0,0,16) l.BackgroundTransparency=1
+  l.Font=Enum.Font.GothamBold l.TextSize=10
+  l.TextColor3=Color3.fromRGB(255,170,50)
+  l.TextXAlignment=Enum.TextXAlignment.Left
+  l.Text="  "..txt l.LayoutOrder=ord l.Parent=body
+  return l
+end
+local function row(txt,ord)
+  local f=Instance.new("Frame")
+  f.Size=UDim2.new(1,0,0,30) f.BackgroundColor3=Color3.fromRGB(26,26,33)
+  f.LayoutOrder=ord f.Parent=body
+  rn(f,7)
+  local l=Instance.new("TextLabel")
+  l.Size=UDim2.new(1,-52,1,0) l.Position=UDim2.new(0,10,0,0)
+  l.BackgroundTransparency=1 l.Font=Enum.Font.GothamMedium
+  l.TextSize=11 l.TextColor3=Color3.fromRGB(215,215,225)
+  l.TextXAlignment=Enum.TextXAlignment.Left l.Text=txt l.Parent=f
+  local sw=Instance.new("Frame")
+  sw.Size=UDim2.new(0,34,0,18) sw.Position=UDim2.new(1,-44,0.5,-9)
+  sw.BackgroundColor3=Color3.fromRGB(48,48,58) sw.BorderSizePixel=0 sw.Parent=f
+  rn(sw,99)
+  local kn=Instance.new("Frame")
+  kn.Size=UDim2.new(0,14,0,14) kn.Position=UDim2.new(0,2,0,2)
+  kn.BackgroundColor3=Color3.fromRGB(200,200,210) kn.BorderSizePixel=0 kn.Parent=sw
+  rn(kn,99)
+  local hit=Instance.new("TextButton")
+  hit.Size=UDim2.new(1,0,1,0) hit.BackgroundTransparency=1 hit.Text=""
+  hit.AutoButtonColor=false hit.Parent=f
+  return {f=f,sw=sw,kn=kn,hit=hit}
+end
+local function paint(t,on)
+  t.sw.BackgroundColor3=on and Color3.fromRGB(40,130,75) or Color3.fromRGB(48,48,58)
+  t.kn.Position=on and UDim2.new(1,-16,0,2) or UDim2.new(0,2,0,2)
+  t.f.BackgroundColor3=on and Color3.fromRGB(30,44,36) or Color3.fromRGB(26,26,33)
+end
+local function bind(t,fn)
+  local cd=false
+  t.hit.InputBegan:Connect(function(i)
+    if i.UserInputType~=Enum.UserInputType.Touch and i.UserInputType~=Enum.UserInputType.MouseButton1 then return end
+    if cd then return end
+    cd=true
+    fn()
+    task.delay(0.25,function() cd=false end)
+  end)
+end
+local function slider(txt,ord,min,max,get,set)
+  local f=Instance.new("Frame")
+  f.Size=UDim2.new(1,0,0,34) f.BackgroundColor3=Color3.fromRGB(22,22,28)
+  f.LayoutOrder=ord f.Parent=body
+  rn(f,7)
+  local l=Instance.new("TextLabel")
+  l.Size=UDim2.new(1,-20,0,14) l.Position=UDim2.new(0,10,0,2)
+  l.BackgroundTransparency=1 l.Font=Enum.Font.Gotham
+  l.TextSize=10 l.TextColor3=Color3.fromRGB(170,170,185)
+  l.TextXAlignment=Enum.TextXAlignment.Left
+  l.Text=txt..": "..get() l.Parent=f
+  local bar=Instance.new("Frame")
+  bar.Size=UDim2.new(1,-20,0,7) bar.Position=UDim2.new(0,10,0,20)
+  bar.BackgroundColor3=Color3.fromRGB(46,46,56) bar.BorderSizePixel=0 bar.Parent=f
+  rn(bar,4)
+  local fill=Instance.new("Frame")
+  fill.Size=UDim2.new((get()-min)/math.max(max-min,1),0,1,0)
+  fill.BackgroundColor3=Color3.fromRGB(255,170,50) fill.BorderSizePixel=0 fill.Parent=bar
+  rn(fill,4)
+  local function apply(x)
+    local a=math.clamp((x-bar.AbsolutePosition.X)/math.max(bar.AbsoluteSize.X,1),0,1)
+    local v=math.floor(min+(max-min)*a+0.5)
+    set(v)
+    fill.Size=UDim2.new(a,0,1,0)
+    l.Text=txt..": "..v
+  end
+  bar.InputBegan:Connect(function(i)
+    if i.UserInputType~=Enum.UserInputType.Touch and i.UserInputType~=Enum.UserInputType.MouseButton1 then return end
+    apply(i.Position.X)
+    local cn=i.Changed:Connect(function() apply(i.Position.X) end)
+    i.Ended:Connect(function() cn:Disconnect() end)
+  end)
+end
+sec("GRANJA",1)
+local tF=row("Autofarm",2)
+local tU=row("Bajo el mapa",3)
+slider("Velocidad",4,5,60,function() return speed end,function(v) speed=v end)
+sec("COMBATE",5)
+local tS=row("Shoot murder",6)
+local tA=row("Kill aura",7)
+slider("Rango aura",8,8,40,function() return auraRange end,function(v) auraRange=v end)
+local tI=row("Aim silencioso",9)
+slider("FOV",10,60,320,function() return fov end,function(v) fov=v end)
+local tG=row("Auto agarrar pistola",11)
+sec("UTILIDADES",12)
+local tR=row("Auto reset bolsa",13)
+local tK=row("Anti AFK",14)
+local tE=row("ESP",15)
+paint(tR,resetOn) paint(tE,esp)
+sbtn=Instance.new("TextButton")
+sbtn.Size=UDim2.new(0,64,0,64) sbtn.Position=UDim2.new(1,-80,0,80)
+sbtn.BackgroundColor3=Color3.fromRGB(196,46,46) sbtn.TextColor3=Color3.fromRGB(255,255,255)
+sbtn.Font=Enum.Font.GothamBold sbtn.TextSize=11 sbtn.Text="SHOOT"
+sbtn.BorderSizePixel=0 sbtn.AutoButtonColor=false sbtn.Visible=false
+sbtn.Parent=sg
+rn(sbtn,32)
+bind(tF,function()
+  farm=not farm paint(tF,farm)
+  if farm then task.spawn(farmLoop) else ugMode(false) end
+end)
+bind(tU,function()
+  ug=not ug paint(tU,ug)
+  if not ug then ugMode(false) end
+end)
+bind(tS,function()
+  shootOn=not shootOn paint(tS,shootOn) sbtn.Visible=shootOn
+end)
+bind(tA,function() aura=not aura paint(tA,aura) end)
+bind(tI,function() aim=not aim paint(tI,aim) end)
+bind(tG,function() grabG=not grabG paint(tG,grabG) end)
+bind(tR,function() resetOn=not resetOn paint(tR,resetOn) end)
+bind(tK,function() afk=not afk paint(tK,afk) end)
+bind(tE,function()
+  esp=not esp paint(tE,esp)
+  if not esp then
+    for _,pl in ipairs(PLS:GetPlayers()) do
+      local c=pl.Character local h=c and c:FindFirstChild("HumanoidRootPart")
+      local d=h and h:FindFirstChild("CFDot")
+      if d then d:Destroy() end
+    end
+  end
+end)
+bind(minb,function()
+  mini=not mini
+  if mini then
+    main.Size=UDim2.new(0,236,0,38) minb.Text="+"
+    lbl.Visible=false body.Visible=false
+  else
+    main.Size=UDim2.new(0,236,0,430) minb.Text="-"
+    lbl.Visible=true body.Visible=true
+  end
+end)
+head.InputBegan:Connect(function(i)
+  if i.UserInputType~=Enum.UserInputType.Touch and i.UserInputType~=Enum.UserInputType.MouseButton1 then return end
+  local st=i.Position
+  local cn=i.Changed:Connect(function()
+    local d=i.Position-st main.Position=UDim2.new(0,10+d.X,0,60+d.Y)
+  end)
+  i.Ended:Connect(function() cn:Disconnect() end)
+end)
+local act,st0,base,drag
+sbtn.InputBegan:Connect(function(i)
+  if act then return end
+  if i.UserInputType~=Enum.UserInputType.Touch and i.UserInputType~=Enum.UserInputType.MouseButton1 then return end
+  act=i st0=i.Position base=sbtn.Position drag=false
+  i.Changed:Connect(function()
+    local d=i.Position-st0
+    if d.Magnitude>10 then
+      drag=true
+      sbtn.Position=UDim2.new(base.X.Scale,base.X.Offset+d.X,base.Y.Scale,base.Y.Offset+d.Y)
+    end
+  end)
+end)
+sbtn.InputEnded:Connect(function(i)
+  if i~=act then return end
+  act=nil
+  if not drag then
+    if aim then aimShot() else shoot() end
+  end
+end)
+P.Idled:Connect(function()
+  if not afk then return end
+  VU:CaptureController() VU:ClickButton2(Vector2.new())
+end)
+P.CharacterAdded:Connect(function()
+  roundC=0 bagMax=0 got=0 ugApp=false drop=false skip={} cList={} cAt=0
+  est="esperando ronda"
+  task.wait(0.4)
+end)
+task.spawn(function()
+  local r=R2:FindFirstChild("CoinCollected",true)
+  if not r then return end
+  r.OnClientEvent:Connect(function(kind,cur,mx)
+    if type(cur)~="number" then return end
+    if type(mx)=="number" and mx>0 then bagMax=mx end
+    if cur>roundC then total=total+(cur-roundC) end
+    roundC=cur
+    if bagMax>0 and cur>=bagMax then doReset() end
+  end)
+end)
+task.spawn(function()
+  while sg.Parent do
+    if aura then pcall(killAura) end
+    task.wait(0.08)
+  end
+end)
+task.spawn(function()
+  while sg.Parent do
+    if grabG then pcall(grabGun) end
+    task.wait(0.4)
+  end
+end)
+task.spawn(function()
+  while sg.Parent do
+    if resetOn and farm then
+      local fb=pg:FindFirstChild("FullBagIcon",true)
+      if fb and fb.Visible then doReset() end
+      if roundC>=50 then doReset() end
+    end
+    task.wait(0.4)
+  end
+end)
+task.spawn(function()
+  while sg.Parent do
+    if esp then
+      for _,pl in ipairs(PLS:GetPlayers()) do
+        if pl~=P then
+          local c=pl.Character local hrp=c and c:FindFirstChild("HumanoidRootPart")
+          if hrp then
+            local bk=pl:FindFirstChild("Backpack") local col
+            if (c and c:FindFirstChild("Knife")) or (bk and bk:FindFirstChild("Knife")) then
+              col=Color3.fromRGB(255,55,55)
+            elseif (c and c:FindFirstChild("Gun")) or (bk and bk:FindFirstChild("Gun")) then
+              col=drop and Color3.fromRGB(255,230,60) or Color3.fromRGB(80,150,255)
+            else col=Color3.fromRGB(60,230,90) end
+            local bb=hrp:FindFirstChild("CFDot")
+            if not bb then
+              bb=Instance.new("BillboardGui") bb.Name="CFDot"
+              bb.Size=UDim2.new(0,9,0,9) bb.StudsOffset=Vector3.new(0,3,0)
+              bb.AlwaysOnTop=true bb.MaxDistance=2500 bb.Parent=hrp
+              local dt=Instance.new("Frame") dt.Size=UDim2.new(1,0,1,0)
+              dt.BorderSizePixel=0 dt.Parent=bb
+              rn(dt,99)
+            end
+            local dt=bb:FindFirstChildOfClass("Frame")
+            if dt then dt.BackgroundColor3=col end
+          end
+        end
+      end
+      local gd=gunDrop()
+      if gd and gd:IsA("BasePart") then
+        drop=true
+        if not gd:FindFirstChild("CFTag") then
+          local bb=Instance.new("BillboardGui") bb.Name="CFTag"
+          bb.Size=UDim2.new(0,70,0,16) bb.StudsOffset=Vector3.new(0,1.5,0)
+          bb.AlwaysOnTop=true bb.MaxDistance=2500 bb.Parent=gd
+          local tx=Instance.new("TextLabel") tx.Size=UDim2.new(1,0,1,0)
+          tx.BackgroundTransparency=1 tx.Text="pistola"
+          tx.TextColor3=Color3.fromRGB(180,220,255) tx.TextScaled=true
+          tx.Font=Enum.Font.GothamBold tx.Parent=bb
+        end
+      end
+    end
+    task.wait(0.4)
+  end
+end)
+task.spawn(function()
+  while sg.Parent do
+    local s=os.clock()-t0
+    lbl.Text="  "..string.format("%02d:%02d:%02d",math.floor(s/3600),math.floor(s%3600/60),math.floor(s%60))
+      .."  |  Ronda "..roundC.."  |  Total "..total.."\n  estado: "..est
+    task.wait(0.3)
+  end
+end)
+print("Candy Farm Isaías v67 listo")
