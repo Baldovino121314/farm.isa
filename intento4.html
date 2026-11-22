@@ -1,0 +1,1044 @@
+--[[
+	Candy Farm Isaias  ·  v80
+	MM2 · cosecha de caramelos
+	Delta / Android · autocontenido · sin webhook
+
+	Bloques bloqueados:
+		[LOCK] DISPARO
+		[LOCK] FARM / SUBTERRANEO
+		[LOCK] AGARRE DE GUN
+]]
+
+if getgenv().CandyFarmIsaias then
+	pcall(function() getgenv().CandyFarmIsaias.destroy() end)
+end
+
+local CFI = {}
+getgenv().CandyFarmIsaias = CFI
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local LP = Players.LocalPlayer
+local char, hum, root
+
+---------------------------------------------------------------------------
+-- ESTADO
+---------------------------------------------------------------------------
+
+local running = true
+local conns = {}
+local farmOn = false
+local underOn = false
+local knifeOn = false
+local shootOn = false
+local noclipOn = false
+local espOn = false
+
+local roundLive = false
+local roundReady = false
+local resetting = false
+local farmRunning = false
+local busyGun = false
+local busyShoot = false
+
+local roundCoins = 0
+local totalCoins = 0
+local coinsMax = 50
+local sessionStart = os.clock()
+local lastProgress = os.clock()
+local lastReset = 0
+local lastCoin = nil
+local coinCache = {}
+local blacklist = {}
+local container = nil
+
+local reachRadius = 10
+local reachAngle = 60
+local stabAll = false
+local killAllOn = false
+
+local isMurderer = false
+local roles, murderer, sheriff = {}, nil, nil
+
+local GUI_MAIN, PANEL, SHOOT_BTN, LBL_ROUND, LBL_TOTAL, LBL_TIME
+
+local C = {
+	bg      = Color3.fromRGB(11, 13, 20),
+	bg2     = Color3.fromRGB(17, 21, 31),
+	line    = Color3.fromRGB(64, 214, 255),
+	line2   = Color3.fromRGB(168, 96, 255),
+	txt     = Color3.fromRGB(236, 242, 252),
+	dim     = Color3.fromRGB(126, 140, 162),
+	on      = Color3.fromRGB(64, 214, 255),
+	off     = Color3.fromRGB(42, 49, 63),
+	danger  = Color3.fromRGB(255, 84, 112),
+}
+
+local function track(c)
+	table.insert(conns, c)
+	return c
+end
+
+local function note(msg)
+	print("[CFI] " .. tostring(msg))
+end
+
+---------------------------------------------------------------------------
+-- UTILIDADES
+---------------------------------------------------------------------------
+
+-- === OminousVibes-Exploit/Scripts ===
+local function isCharacterValid(c)
+	if not (c and c:IsA("Model")) then return false end
+	local h = c:FindFirstChildWhichIsA("Humanoid")
+	if not h or h.Health <= 0 then return false end
+	return (c.PrimaryPart or c:FindFirstChild("HumanoidRootPart")) ~= nil
+end
+
+local function alive()
+	return isCharacterValid(char)
+end
+
+local function refreshChar()
+	char = LP.Character
+	hum = char and char:FindFirstChildWhichIsA("Humanoid")
+	root = char and char:FindFirstChild("HumanoidRootPart")
+end
+
+-- === MM2-Holloween / nousig ===
+local function isLiveCoin(c)
+	if not c:IsA("BasePart") then return false end
+	if not c:FindFirstChild("TouchInterest") then return false end
+	local v = c:FindFirstChild("CoinVisual")
+	if v and v:GetAttribute("Collected") == true then return false end
+	return true
+end
+
+-- === jogosutora/XHubMM2 (corregido: el gun vive en la carpeta del mapa) ===
+local function findGunDrop()
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if d.Name == "GunDrop" then return d end
+	end
+	return nil
+end
+
+local function findContainer()
+	if container and container.Parent then return container end
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if d.Name == "CoinContainer" then
+			container = d
+			return d
+		end
+	end
+	return nil
+end
+
+local function fmtTime(sec)
+	sec = math.floor(sec)
+	local h = math.floor(sec / 3600)
+	local m = math.floor((sec % 3600) / 60)
+	local s = sec % 60
+	return string.format("%02d:%02d:%02d", h, m, s)
+end
+
+---------------------------------------------------------------------------
+-- RONDA Y ROLES
+---------------------------------------------------------------------------
+
+-- === OminousVibes-Exploit/Scripts ===
+local function applyRole(plr, role)
+	roles[plr] = role
+	if role == "Murderer" then murderer = plr end
+	if role == "Sheriff" then sheriff = plr end
+	if plr == LP then isMurderer = (role == "Murderer") end
+end
+
+local function applyPayload(data)
+	if type(data) ~= "table" then return end
+	for name, info in pairs(data) do
+		local p = Players:FindFirstChild(name)
+		if p then
+			applyRole(p, type(info) == "table" and info.Role or "Unknown")
+		end
+	end
+end
+
+pcall(function()
+	track(ReplicatedStorage.Fade.OnClientEvent:Connect(applyPayload))
+end)
+pcall(function()
+	track(ReplicatedStorage.UpdatePlayerData.OnClientEvent:Connect(applyPayload))
+end)
+pcall(function()
+	track(ReplicatedStorage.RoleSelect.OnClientEvent:Connect(function(role)
+		applyRole(LP, role or "Unknown")
+	end))
+end)
+
+pcall(function()
+	track(ReplicatedStorage.Remotes.Gameplay.RoundEndFade.OnClientEvent:Connect(function()
+		table.clear(roles)
+		murderer = nil
+		sheriff = nil
+		isMurderer = false
+		roundLive = false
+		roundReady = false
+		busyGun = false
+		busyShoot = false
+		resetting = false
+	end))
+end)
+
+-- === MM2-Holloween ===
+task.spawn(function()
+	local ok = pcall(function()
+		local data = ReplicatedStorage.GetPlayerData:InvokeServer()
+		applyPayload(data)
+	end)
+	if not ok then note("GetPlayerData no responde") end
+end)
+
+-- === MM2-Holloween ===
+local ROUND_START = { "CoinsStarted", "RoundStart", "RoundStarted" }
+task.spawn(function()
+	local remotes = ReplicatedStorage:WaitForChild("Remotes", 15)
+	local gameplay = remotes and remotes:WaitForChild("Gameplay", 15)
+	if not gameplay then return end
+	for _, name in ipairs(ROUND_START) do
+		local r = gameplay:FindFirstChild(name)
+		if r and r:IsA("RemoteEvent") then
+			track(r.OnClientEvent:Connect(function()
+				roundLive = true
+				roundReady = true
+			end))
+		end
+	end
+end)
+
+-- === jogosutora/XHubMM2 · respaldo si los remotes fallan ===
+local function roleByBackpack()
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LP then
+			if p.Backpack:FindFirstChild("Knife") then return "Murderer" end
+			if p.Backpack:FindFirstChild("Gun") then return "Sheriff" end
+		end
+	end
+	return "Innocent"
+end
+
+---------------------------------------------------------------------------
+-- CONTADORES Y BOLSA
+---------------------------------------------------------------------------
+
+local function onBagFull()
+	if resetting then return end
+	if os.clock() - lastReset < 10 then return end
+	resetting = true
+	lastReset = os.clock()
+	note("bolsa llena · reinicio")
+	pcall(function()
+		if hum then hum.Health = 0 end
+		if char then char:BreakJoints() end
+	end)
+	task.delay(4, function() resetting = false end)
+end
+
+-- === MM2-Holloween ===
+task.spawn(function()
+	local remotes = ReplicatedStorage:WaitForChild("Remotes", 15)
+	local gameplay = remotes and remotes:WaitForChild("Gameplay", 15)
+	local cr = gameplay and gameplay:WaitForChild("CoinCollected", 15)
+	if not cr then note("CoinCollected ausente · uso watchdog") return end
+	track(cr.OnClientEvent:Connect(function(_, current, max)
+		roundCoins = current or (roundCoins + 1)
+		totalCoins = totalCoins + 1
+		if max then coinsMax = max end
+		roundLive = true
+		roundReady = true
+		lastProgress = os.clock()
+		if roundCoins >= coinsMax then onBagFull() end
+	end))
+end)
+
+-- === MM2-Holloween ===
+track(Workspace.DescendantAdded:Connect(function(d)
+	if d.Name == "CoinContainer" then
+		container = d
+		roundCoins = 0
+		coinCache = {}
+		blacklist = {}
+		lastCoin = nil
+		lastProgress = os.clock()
+	end
+end))
+
+---------------------------------------------------------------------------
+-- SELECCION Y MOVIMIENTO DE MONEDA
+---------------------------------------------------------------------------
+
+-- === vexroxd/My-Script- ===
+local function findNearestCoin(radius)
+	if not root then return nil end
+	local best, bestD = nil, radius
+	local ok = pcall(function()
+		for _, c in ipairs(container:GetChildren()) do
+			if isLiveCoin(c) and not blacklist[c] then
+				local d = (c.Position - root.Position).Magnitude
+				if d < bestD then
+					best, bestD = c, d
+				end
+			end
+		end
+	end)
+	if not ok then return nil end
+	return best
+end
+
+local function anyLiveCoin()
+	local pool = {}
+	local ok = pcall(function()
+		for _, c in ipairs(container:GetChildren()) do
+			if isLiveCoin(c) and not blacklist[c] then
+				table.insert(pool, c)
+			end
+		end
+	end)
+	if not ok or #pool == 0 then return nil end
+	return pool[math.random(1, #pool)]
+end
+
+-- === vexroxd + MM2-Holloween ===
+local function glideTo(coin)
+	if not root or not coin or not coin.Parent then return end
+	local tw = TweenService:Create(root,
+		TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ CFrame = coin.CFrame })
+	tw:Play()
+	local t0 = os.clock()
+	while tw.PlaybackState == Enum.PlaybackState.Playing do
+		if not root or not root.Parent or not coin.Parent then break end
+		if os.clock() - t0 > 1.05 then break end
+		task.wait()
+	end
+	pcall(function() tw:Cancel() end)
+end
+
+---------------------------------------------------------------------------
+-- [LOCK] AGARRE DE GUN
+---------------------------------------------------------------------------
+
+local function grabGun()
+	if busyGun or not roundLive or not alive() then return end
+	local gd = findGunDrop()
+	if not gd then return end
+	if (gd.Position - root.Position).Magnitude > 120 then return end
+	busyGun = true
+	local done = false
+	task.spawn(function()
+		pcall(function()
+			local t0 = os.clock()
+			while gd.Parent and roundLive and os.clock() - t0 < 2 do
+				if not root or not root.Parent then break end
+				root.CFrame = gd.CFrame
+				RunService.Stepped:Wait()
+			end
+			done = true
+		end)
+	end)
+	task.delay(5, function() busyGun = false end)
+	task.spawn(function()
+		while not done do task.wait(0.1) end
+		busyGun = false
+	end)
+end
+
+---------------------------------------------------------------------------
+-- [LOCK] FARM / SUBTERRANEO
+---------------------------------------------------------------------------
+
+local function farmStep()
+	if not roundLive then return "idle" end
+	if resetting then return "reset" end
+	if not alive() then return "dead" end
+	findContainer()
+	if not container then return "sinmapa" end
+
+	local coin = findNearestCoin(150)
+	if not coin then
+		coin = anyLiveCoin()
+	end
+	if not coin then
+		table.clear(blacklist)
+		return "vacio"
+	end
+
+	if (root.Position - coin.Position).Magnitude < 5 then
+		root.CFrame = coin.CFrame
+	else
+		glideTo(coin)
+	end
+
+	if coin == lastCoin then
+		if os.clock() - lastProgress > 6 then
+			blacklist[coin] = true
+			lastProgress = os.clock()
+		end
+	else
+		lastCoin = coin
+		lastProgress = os.clock()
+	end
+
+	if underOn and root then
+		pcall(function()
+			root.CFrame = root.CFrame + Vector3.new(0, -6, 0)
+		end)
+	end
+
+	return "ok"
+end
+
+local function farmLoop()
+	if farmRunning then return end
+	farmRunning = true
+	task.spawn(function()
+		while running and farmOn do
+			local ok, res = pcall(farmStep)
+			if not ok then
+				note("FARM: " .. tostring(res))
+				task.wait(1)
+			else
+				task.wait(0.12)
+			end
+		end
+		farmRunning = false
+	end)
+end
+
+-- watchdog del farm
+task.spawn(function()
+	while running do
+		task.wait(1)
+		if farmOn and roundLive and not farmRunning then
+			note("watchdog · relanzando farm")
+			farmLoop()
+		end
+	end
+end)
+
+-- === MM2-Holloween ===
+track(Workspace.DescendantAdded:Connect(function(d)
+	if d.Name == "CoinContainer" then
+		blacklist = {}
+	end
+end))
+
+---------------------------------------------------------------------------
+-- CUCHILLO Y DISPARO
+---------------------------------------------------------------------------
+
+local function angleDelta(a, b)
+	return math.deg(math.acos(math.clamp(a:Dot(b), -1, 1)))
+end
+
+-- === OminousVibes-Exploit/Scripts ===
+local function reachTick()
+	if not knifeOn and not stabAll then return end
+	if not alive() then return end
+	local knife = char:FindFirstChild("Knife")
+	if not knife or not knife:IsA("Tool") then return end
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LP and isCharacterValid(p.Character) then
+			local er = p.Character.HumanoidRootPart
+			if er then
+				local dist = (er.Position - root.Position).Magnitude
+				local ang = angleDelta(root.CFrame.LookVector.Unit, (er.Position - root.Position).Unit)
+				if stabAll or (dist <= reachRadius and ang <= reachAngle) then
+					pcall(function()
+						firetouchinterest(er, knife.Handle, 1)
+						firetouchinterest(er, knife.Handle, 0)
+					end)
+				end
+			end
+		end
+	end
+end
+
+-- === [LOCK] DISPARO ===
+local function shoot()
+	if busyShoot then return end
+	if not alive() then return end
+	local gun = char:FindFirstChild("Gun")
+	if not gun or not gun:IsA("Tool") then return end
+
+	local target = murderer
+	if target and not isCharacterValid(target.Character) then target = nil end
+	if not target then
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LP and isCharacterValid(p.Character) then
+				if p.Backpack:FindFirstChild("Knife") then
+					target = p
+					break
+				end
+			end
+		end
+	end
+	if not target then return end
+
+	local er = target.Character:FindFirstChild("HumanoidRootPart")
+	if not er then return end
+
+	busyShoot = true
+	pcall(function()
+		local back = root.CFrame
+		root.CFrame = CFrame.new(root.Position, er.Position)
+		firetouchinterest(er, gun.Handle, 1)
+		firetouchinterest(er, gun.Handle, 0)
+		gun:Activate()
+		task.wait(0.05)
+		root.CFrame = back
+	end)
+	task.delay(0.4, function() busyShoot = false end)
+end
+
+---------------------------------------------------------------------------
+-- ESP
+---------------------------------------------------------------------------
+
+-- === jogosutora/XHubMM2 ===
+local function removeESP(part)
+	if not part then return end
+	for _, o in ipairs(part:GetChildren()) do
+		if o:IsA("Highlight") or o:IsA("BillboardGui") then
+			o:Destroy()
+		end
+	end
+end
+
+local function addESP(part, color, label)
+	if not part then return end
+	removeESP(part)
+	local hl = Instance.new("Highlight")
+	hl.FillColor = color
+	hl.OutlineColor = color
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.Parent = part
+	local head = part:FindFirstChild("Head")
+	if head then
+		local bb = Instance.new("BillboardGui")
+		bb.Adornee = head
+		bb.Size = UDim2.new(0, 200, 0, 40)
+		bb.StudsOffset = Vector3.new(0, 2, 0)
+		bb.AlwaysOnTop = true
+		bb.Parent = part
+		local tl = Instance.new("TextLabel")
+		tl.Size = UDim2.fromScale(1, 1)
+		tl.BackgroundTransparency = 1
+		tl.Text = label
+		tl.TextColor3 = color
+		tl.TextScaled = true
+		tl.Font = Enum.Font.SourceSansBold
+		tl.Parent = bb
+	end
+end
+
+task.spawn(function()
+	while running do
+		task.wait(0.4)
+		if espOn then
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p ~= LP and isCharacterValid(p.Character) then
+					local role = roles[p] or roleByBackpack()
+					local col = Color3.fromRGB(150, 150, 150)
+					if role == "Murderer" then col = Color3.fromRGB(255, 70, 90)
+					elseif role == "Sheriff" then col = Color3.fromRGB(70, 140, 255)
+					elseif role == "Hero" then col = Color3.fromRGB(255, 220, 70)
+					elseif role == "Innocent" then col = Color3.fromRGB(90, 240, 150) end
+					addESP(p.Character, col, tostring(role))
+				end
+			end
+		end
+	end
+end)
+
+---------------------------------------------------------------------------
+-- NOCLIP
+---------------------------------------------------------------------------
+
+-- === jogosutora/XHubMM2 ===
+track(RunService.Stepped:Connect(function()
+	if not noclipOn or not char then return end
+	for _, p in ipairs(char:GetDescendants()) do
+		if p:IsA("BasePart") and p.CanCollide then
+			p.CanCollide = false
+		end
+	end
+end))
+
+---------------------------------------------------------------------------
+-- PERSONAJE Y ANTI-AFK
+---------------------------------------------------------------------------
+
+track(LP.CharacterAdded:Connect(function(c)
+	refreshChar()
+	busyGun = false
+	busyShoot = false
+	task.wait(1)
+	pcall(function()
+		if hum then hum.WalkSpeed = 16 end
+	end)
+end))
+
+track(LP.CharacterRemoving:Connect(function()
+	roundLive = false
+	busyGun = false
+end))
+
+track(LP.Idled:Connect(function()
+	pcall(function()
+		VirtualUser:CaptureController()
+		VirtualUser:ClickButton2(Vector2.new())
+	end)
+end))
+
+task.spawn(function()
+	while running do
+		task.wait(30)
+		pcall(function()
+			if hum then hum:ChangeState(Enum.HumanoidStateType.Running) end
+		end)
+	end
+end)
+
+---------------------------------------------------------------------------
+-- INTERFAZ
+---------------------------------------------------------------------------
+
+local function corner(inst, r)
+	local u = Instance.new("UICorner")
+	u.CornerRadius = UDim.new(0, r or 14)
+	u.Parent = inst
+	return u
+end
+
+local function drag(frame, handle)
+	local active = false
+	local start, origin
+	track(handle.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then
+			active = true
+			start = i.Position
+			origin = frame.Position
+		end
+	end))
+	track(handle.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then
+			active = false
+		end
+	end))
+	track(UserInputService.InputChanged:Connect(function(i)
+		if not active then return end
+		if i.UserInputType == Enum.UserInputType.MouseMovement
+			or i.UserInputType == Enum.UserInputType.Touch then
+			local d = i.Position - start
+			frame.Position = UDim2.new(
+				origin.X.Scale, origin.X.Offset + d.X,
+				origin.Y.Scale, origin.Y.Offset + d.Y)
+		end
+	end))
+end
+
+local function makeSwitch(parent, text, y, def, cb)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, -20, 0, 40)
+	row.Position = UDim2.new(0, 10, 0, y)
+	row.BackgroundColor3 = C.bg2
+	row.BackgroundTransparency = 0.35
+	row.BorderSizePixel = 0
+	row.Parent = parent
+	corner(row, 12)
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, -70, 1, 0)
+	lbl.Position = UDim2.new(0, 14, 0, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = text
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.TextColor3 = C.txt
+	lbl.TextSize = 13
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.Parent = row
+
+	local track_ = Instance.new("Frame")
+	track_.Size = UDim2.new(0, 42, 0, 22)
+	track_.Position = UDim2.new(1, -56, 0.5, -11)
+	track_.BackgroundColor3 = C.off
+	track_.BorderSizePixel = 0
+	track_.Parent = row
+	corner(track_, 11)
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.new(0, 16, 0, 16)
+	knob.Position = UDim2.new(0, 3, 0.5, -8)
+	knob.BackgroundColor3 = Color3.fromRGB(160, 172, 190)
+	knob.BorderSizePixel = 0
+	knob.Parent = track_
+	corner(knob, 8)
+
+	local state = def and true or false
+
+	local function paint()
+		local goalPos = state and UDim2.new(0, 23, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
+		TweenService:Create(knob, TweenInfo.new(0.16, Enum.EasingStyle.Quad), { Position = goalPos }):Play()
+		TweenService:Create(track_, TweenInfo.new(0.16), {
+			BackgroundColor3 = state and C.on or C.off,
+		}):Play()
+		TweenService:Create(knob, TweenInfo.new(0.16), {
+			BackgroundColor3 = state and Color3.fromRGB(10, 14, 20) or Color3.fromRGB(160, 172, 190),
+		}):Play()
+	end
+
+	local function flip()
+		state = not state
+		paint()
+		pcall(cb, state)
+	end
+
+	track(row.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then
+			flip()
+		end
+	end))
+
+	if state then paint() end
+	return state
+end
+
+local function buildPanel()
+	GUI_MAIN = Instance.new("ScreenGui")
+	GUI_MAIN.Name = "CandyFarmIsaias"
+	GUI_MAIN.ResetOnSpawn = false
+	GUI_MAIN.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	GUI_MAIN.DisplayOrder = 999
+	GUI_MAIN.Parent = LP:WaitForChild("PlayerGui")
+
+	PANEL = Instance.new("Frame")
+	PANEL.Size = UDim2.new(0, 268, 0, 442)
+	PANEL.Position = UDim2.new(0, 18, 0.5, -221)
+	PANEL.BackgroundColor3 = C.bg
+	PANEL.BackgroundTransparency = 0.04
+	PANEL.BorderSizePixel = 0
+	PANEL.ClipsDescendants = true
+	PANEL.Active = true
+	PANEL.Parent = GUI_MAIN
+	corner(PANEL, 16)
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 1.4
+	stroke.Color = C.line
+	stroke.Transparency = 0.25
+	stroke.Parent = PANEL
+
+	task.spawn(function()
+		local a = false
+		while running and stroke.Parent do
+			task.wait(1.4)
+			a = not a
+			pcall(function()
+				TweenService:Create(stroke, TweenInfo.new(1.4), {
+					Color = a and C.line2 or C.line,
+					Transparency = a and 0.45 or 0.15,
+				}):Play()
+			end)
+		end
+	end)
+
+	-- particulas
+	task.spawn(function()
+		for i = 1, 9 do
+			local d = Instance.new("Frame")
+			d.Size = UDim2.new(0, 2, 0, 2)
+			d.BackgroundColor3 = (i % 2 == 0) and C.line or C.line2
+			d.BackgroundTransparency = 0.5
+			d.BorderSizePixel = 0
+			d.Position = UDim2.new(math.random(), 0, 1, 0)
+			d.Parent = PANEL
+			corner(d, 2)
+			task.spawn(function()
+				while running and d.Parent do
+					d.Position = UDim2.new(math.random(), 0, 1, 0)
+					d.BackgroundTransparency = 0.8
+					TweenService:Create(d, TweenInfo.new(math.random(3, 6), Enum.EasingStyle.Linear), {
+						Position = UDim2.new(math.random(), 0, -0.05, 0),
+						BackgroundTransparency = 1,
+					}):Play()
+					task.wait(math.random(2, 5))
+				end
+			end)
+		end
+	end)
+
+	local head = Instance.new("Frame")
+	head.Size = UDim2.new(1, 0, 0, 52)
+	head.BackgroundColor3 = C.bg2
+	head.BackgroundTransparency = 0.15
+	head.BorderSizePixel = 0
+	head.Parent = PANEL
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -20, 0, 30)
+	title.Position = UDim2.new(0, 14, 0, 11)
+	title.BackgroundTransparency = 1
+	title.Text = "Candy Farm Isaias"
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextColor3 = C.txt
+	title.TextSize = 17
+	title.Font = Enum.Font.GothamBold
+	title.Parent = head
+
+	local close = Instance.new("TextButton")
+	close.Size = UDim2.new(0, 26, 0, 26)
+	close.Position = UDim2.new(1, -34, 0, 13)
+	close.BackgroundColor3 = C.bg
+	close.BackgroundTransparency = 0.3
+	close.BorderSizePixel = 0
+	close.Text = "×"
+	close.TextColor3 = C.dim
+	close.TextSize = 17
+	close.Font = Enum.Font.GothamBold
+	close.AutoButtonColor = false
+	close.Parent = head
+	corner(close, 8)
+
+	track(close.MouseButton1Click:Connect(function()
+		GUI_MAIN.Enabled = not GUI_MAIN.Enabled
+	end))
+
+	drag(PANEL, head)
+
+	-- contadores
+	local stats = Instance.new("Frame")
+	stats.Size = UDim2.new(1, -20, 0, 54)
+	stats.Position = UDim2.new(0, 10, 0, 62)
+	stats.BackgroundColor3 = C.bg2
+	stats.BackgroundTransparency = 0.5
+	stats.BorderSizePixel = 0
+	stats.Parent = PANEL
+	corner(stats, 12)
+
+	local function cell(text, x, col)
+		local l = Instance.new("TextLabel")
+		l.Size = UDim2.new(0.34, 0, 1, 0)
+		l.Position = UDim2.new(x, 0, 0, 0)
+		l.BackgroundTransparency = 1
+		l.Text = text
+		l.TextColor3 = col or C.txt
+		l.TextSize = 15
+		l.Font = Enum.Font.GothamBold
+		l.Parent = stats
+		return l
+	end
+
+	LBL_ROUND = cell("0", 0, C.line)
+	LBL_TOTAL = cell("0", 0.33, C.line2)
+	LBL_TIME = cell("00:00:00", 0.66, C.dim)
+
+	local y = 126
+	makeSwitch(PANEL, "AUTOFARM", y, false, function(v)
+		farmOn = v
+		if v then farmLoop() end
+	end)
+	y = y + 46
+	makeSwitch(PANEL, "SUBTERRANEO", y, false, function(v) underOn = v end)
+	y = y + 46
+	makeSwitch(PANEL, "CUCHILLO AUTO", y, false, function(v) knifeOn = v end)
+	y = y + 46
+	makeSwitch(PANEL, "SHOOT MURDER", y, false, function(v)
+		shootOn = v
+		if SHOOT_BTN then SHOOT_BTN.Visible = v end
+	end)
+	y = y + 46
+	makeSwitch(PANEL, "NOCLIP", y, false, function(v) noclipOn = v end)
+	y = y + 46
+	makeSwitch(PANEL, "ESP ROLES", y, false, function(v)
+		espOn = v
+		if not v then
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p.Character then removeESP(p.Character) end
+			end
+		end
+	end)
+	y = y + 46
+
+	local foot = Instance.new("TextLabel")
+	foot.Size = UDim2.new(1, -20, 0, 22)
+	foot.Position = UDim2.new(0, 10, 0, y + 4)
+	foot.BackgroundTransparency = 1
+	foot.Text = "v80 · sin webhook"
+	foot.TextColor3 = C.dim
+	foot.TextSize = 11
+	foot.Font = Enum.Font.GothamMedium
+	foot.Parent = PANEL
+end
+
+---------------------------------------------------------------------------
+-- BOTON FLOTANTE DE DISPARO
+---------------------------------------------------------------------------
+
+local function buildShootButton()
+	SHOOT_BTN = Instance.new("TextButton")
+	SHOOT_BTN.Size = UDim2.new(0, 84, 0, 84)
+	SHOOT_BTN.Position = UDim2.new(1, -108, 0.5, 120)
+	SHOOT_BTN.BackgroundColor3 = C.bg2
+	SHOOT_BTN.BackgroundTransparency = 0.1
+	SHOOT_BTN.BorderSizePixel = 0
+	SHOOT_BTN.Text = "SHOOT"
+	SHOOT_BTN.TextColor3 = C.danger
+	SHOOT_BTN.TextSize = 14
+	SHOOT_BTN.Font = Enum.Font.GothamBold
+	SHOOT_BTN.AutoButtonColor = false
+	SHOOT_BTN.Visible = false
+	SHOOT_BTN.Parent = GUI_MAIN
+	corner(SHOOT_BTN, 42)
+
+	local st = Instance.new("UIStroke")
+	st.Thickness = 1.6
+	st.Color = C.danger
+	st.Transparency = 0.2
+	st.Parent = SHOOT_BTN
+
+	local pressed = false
+	local moved = false
+	local startPos, originPos
+
+	track(SHOOT_BTN.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then
+			pressed = true
+			moved = false
+			startPos = i.Position
+			originPos = SHOOT_BTN.Position
+			TweenService:Create(SHOOT_BTN, TweenInfo.new(0.1), {
+				Size = UDim2.new(0, 76, 0, 76),
+			}):Play()
+		end
+	end))
+
+	track(UserInputService.InputChanged:Connect(function(i)
+		if not pressed then return end
+		if i.UserInputType == Enum.UserInputType.MouseMovement
+			or i.UserInputType == Enum.UserInputType.Touch then
+			local d = i.Position - startPos
+			if math.abs(d.X) > 6 or math.abs(d.Y) > 6 then moved = true end
+			SHOOT_BTN.Position = UDim2.new(
+				originPos.X.Scale, originPos.X.Offset + d.X,
+				originPos.Y.Scale, originPos.Y.Offset + d.Y)
+		end
+	end))
+
+	track(SHOOT_BTN.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1
+			or i.UserInputType == Enum.UserInputType.Touch then
+			pressed = false
+			TweenService:Create(SHOOT_BTN, TweenInfo.new(0.12, Enum.EasingStyle.Back), {
+				Size = UDim2.new(0, 84, 0, 84),
+			}):Play()
+			if not moved then
+				TweenService:Create(st, TweenInfo.new(0.1), { Transparency = 0 }):Play()
+				task.delay(0.14, function()
+					pcall(function()
+						TweenService:Create(st, TweenInfo.new(0.2), { Transparency = 0.2 }):Play()
+					end)
+				end)
+				shoot()
+			end
+		end
+	end))
+end
+
+---------------------------------------------------------------------------
+-- LOOPS
+---------------------------------------------------------------------------
+
+task.spawn(function()
+	while running do
+		task.wait(0.25)
+		if roundLive and alive() then
+			pcall(grabGun)
+		end
+	end
+end)
+
+track(RunService.RenderStepped:Connect(function()
+	if shootOn and roundLive and alive() then
+		pcall(reachTick)
+	end
+end))
+
+task.spawn(function()
+	while running do
+		task.wait(0.5)
+		if LBL_ROUND then LBL_ROUND.Text = tostring(roundCoins) end
+		if LBL_TOTAL then LBL_TOTAL.Text = tostring(totalCoins) end
+		if LBL_TIME then LBL_TIME.Text = fmtTime(os.clock() - sessionStart) end
+	end
+end)
+
+task.spawn(function()
+	while running do
+		task.wait(1)
+		if roundLive and roundCoins > 0 and os.clock() - lastProgress > 12 then
+			blacklist = {}
+			lastProgress = os.clock()
+		end
+	end
+end)
+
+---------------------------------------------------------------------------
+-- ARRANQUE
+---------------------------------------------------------------------------
+
+function CFI.destroy()
+	running = false
+	for _, c in ipairs(conns) do
+		pcall(function() c:Disconnect() end)
+	end
+	table.clear(conns)
+	if GUI_MAIN then pcall(function() GUI_MAIN:Destroy() end) end
+	pcall(function()
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p.Character then removeESP(p.Character) end
+		end
+	end)
+	note("detenido")
+end
+
+refreshChar()
+buildPanel()
+buildShootButton()
+
+task.spawn(function()
+	task.wait(2)
+	if alive() then
+		roundLive = true
+		roundReady = true
+	end
+end)
+
+track(LP.CharacterAdded:Connect(function()
+	task.wait(1.5)
+	if alive() then
+		roundLive = true
+		roundReady = true
+	end
+end))
+
+note("v80 cargada")
+note("panel: Candy Farm Isaias")
