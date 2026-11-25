@@ -1,0 +1,587 @@
+--[[ VENICE MM2 · ESP unico con pulso + SHOOT MURDER real · Delta Android ]]
+if _G.VeniceMM2 and _G.VeniceMM2.Unload then pcall(_G.VeniceMM2.Unload) end
+_G.VeniceMM2 = {}
+
+local Players  = game:GetService("Players")
+local Run      = game:GetService("RunService")
+local UIS      = game:GetService("UserInputService")
+local Tween    = game:GetService("TweenService")
+local WS       = game:GetService("Workspace")
+
+local LP, Cam = Players.LocalPlayer, WS.CurrentCamera
+
+local S = {
+    esp = true, wall = false, autoGrab = true,
+    dist = 500, cd = 0.5, pred = 0.12, fov = 180, smooth = 18,
+}
+
+local C = {
+    bg = Color3.fromRGB(13,13,19), panel = Color3.fromRGB(21,21,30),
+    row = Color3.fromRGB(27,27,38), accent = Color3.fromRGB(124,92,255),
+    text = Color3.fromRGB(232,232,242), dim = Color3.fromRGB(140,140,160),
+    red = Color3.fromRGB(255,55,75), blue = Color3.fromRGB(60,150,255),
+    green = Color3.fromRGB(60,245,140), yellow = Color3.fromRGB(255,215,0),
+}
+
+local ROLE_COLOR = { Murderer = C.red, Sheriff = C.blue, Hero = C.yellow, Innocent = C.green }
+
+local conns, espStore, pulses = {}, {}, {}
+local locked, lastShot, unloaded = false, 0, false
+local oldCamType = Cam.CameraType
+
+local function conn(sig, fn) local c = sig:Connect(fn); table.insert(conns, c); return c end
+local function new(cl, p, par)
+    local o = Instance.new(cl)
+    for k, v in pairs(p) do if k ~= "Parent" then o[k] = v end end
+    if par then o.Parent = par end
+    return o
+end
+local function low(s) return string.lower(s) end
+local function char() return LP.Character end
+local function hrp() local c = char() return c and c:FindFirstChild("HumanoidRootPart") end
+local function alive()
+    local h = char() and char():FindFirstChildOfClass("Humanoid")
+    return h and h.Health > 0
+end
+
+--================ ROLES ================--
+local roleCache = {}
+
+local function toolNamed(cont, keys)
+    if not cont then return false end
+    for _, t in ipairs(cont:GetChildren()) do
+        if t:IsA("Tool") then
+            local n = low(t.Name)
+            for _, k in ipairs(keys) do if n:find(k) then return true end end
+        end
+    end
+    return false
+end
+
+local function roleOf(plr)
+    if roleCache[plr] then return roleCache[plr] end
+    local r = "Innocent"
+    local rv = plr:FindFirstChild("Role")
+    if rv and rv:IsA("ValueBase") then
+        local v = tostring(rv.Value)
+        if ROLE_COLOR[v] then r = v end
+    end
+    if r == "Innocent" then
+        local bp, ch = plr:FindFirstChildOfClass("Backpack"), plr.Character
+        if toolNamed(bp, {"knife"}) or toolNamed(ch, {"knife"}) then
+            r = "Murderer"
+        elseif toolNamed(bp, {"gun","revolver","pistol"}) or toolNamed(ch, {"gun","revolver","pistol"}) then
+            r = "Sheriff"
+        end
+    end
+    roleCache[plr] = r
+    return r
+end
+
+--================ ESP (unica funcion) ================--
+local function clearESP(p)
+    local d = espStore[p]; if not d then return end
+    for _, o in pairs(d) do pcall(function() o:Destroy() end) end
+    espStore[p] = nil; pulses[p] = nil
+end
+
+local function buildESP(p)
+    clearESP(p)
+    if p == LP then return end
+    local ch = p.Character
+    local root = ch and ch:FindFirstChild("HumanoidRootPart")
+    local head = ch and ch:FindFirstChild("Head")
+    if not (root and head) then return end
+
+    local role = roleOf(p)
+    local col = ROLE_COLOR[role]
+    local st = {}
+
+    local hl = new("Highlight", {
+        Name = "VMM2", Adornee = ch, FillColor = col,
+        FillTransparency = 0.55, OutlineColor = col,
+        OutlineTransparency = 0, DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+    }, ch)
+    st.hl = hl
+    if role == "Murderer" then pulses[p] = hl end
+
+    local bb = new("BillboardGui", {
+        Name = "VMM2_TAG", Adornee = head, Size = UDim2.fromOffset(190, 40),
+        StudsOffset = Vector3.new(0, 2.7, 0), AlwaysOnTop = true,
+        MaxDistance = S.dist, LightInfluence = 0,
+    }, head)
+    st.bb = bb
+
+    new("TextLabel", {
+        Size = UDim2.new(1,0,0,17), BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = col,
+        TextStrokeTransparency = 0.3, Text = string.upper(role),
+    }, bb)
+    st.info = new("TextLabel", {
+        Position = UDim2.new(0,0,0,17), Size = UDim2.new(1,0,0,15),
+        BackgroundTransparency = 1, Font = Enum.Font.GothamMedium,
+        TextSize = 11, TextColor3 = C.text, TextStrokeTransparency = 0.5,
+        Text = p.Name,
+    }, bb)
+
+    if role ~= "Innocent" then
+        local lr = hrp()
+        if lr then
+            local a0 = new("Attachment", {Name = "VMM2_A0"}, lr)
+            local a1 = new("Attachment", {Name = "VMM2_A1"}, root)
+            st.beam = new("Beam", {
+                Name = "VMM2_T", Attachment0 = a0, Attachment1 = a1,
+                Color = ColorSequence.new(col), Width0 = 0.08, Width1 = 0.02,
+                FaceCamera = true, Transparency = NumberSequence.new(0.3),
+            }, WS)
+            st.a0, st.a1 = a0, a1
+        end
+    end
+    espStore[p] = st
+end
+
+local function rebuild()
+    for p in pairs(espStore) do clearESP(p) end
+    if not S.esp then return end
+    for _, p in ipairs(Players:GetPlayers()) do buildESP(p) end
+end
+
+--================ SHOOT MURDER (funcion robada) ================--
+local function findGun()
+    local function scan(c)
+        if not c then return nil end
+        for _, t in ipairs(c:GetChildren()) do
+            if t:IsA("Tool") then
+                local n = low(t.Name)
+                if n:find("gun") or n:find("revolver") or n:find("pistol") then return t end
+            end
+        end
+        return nil
+    end
+    local ch, bp = char(), LP:FindFirstChildOfClass("Backpack")
+    local g = scan(ch) or scan(bp)
+    if g then return g end
+    if S.autoGrab then
+        for _, t in ipairs(WS:GetChildren()) do
+            if t:IsA("Tool") then
+                local n = low(t.Name)
+                if n:find("gun") or n:find("revolver") then
+                    if bp then pcall(function() t.Parent = bp end) end
+                    return t
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function fireAt(pos)
+    local gun = findGun()
+    if not gun then return end
+    local ch = char()
+    if not ch then return end
+    if gun.Parent ~= ch then pcall(function() gun.Parent = ch end) end
+
+    local ev = gun:FindFirstChild("Shoot") or gun:FindFirstChildOfClass("RemoteEvent")
+    if ev then
+        pcall(function() ev:FireServer(pos) end)
+    else
+        pcall(function() gun:Activate() end)
+        for _, c in ipairs(gun:GetChildren()) do
+            if c:IsA("RemoteEvent") then pcall(function() c:FireServer() end) end
+        end
+    end
+end
+
+local ray = RaycastParams.new()
+ray.FilterType = Enum.RaycastFilterType.Exclude
+ray.IgnoreWater = true
+
+local function refreshRay()
+    local list = {Cam}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character then table.insert(list, p.Character) end
+    end
+    ray.FilterDescendantsInstances = list
+end
+
+local function bestMurderer()
+    local lr = hrp(); if not lr then return nil end
+    local best, bd = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and roleOf(p) == "Murderer" then
+            local c = p.Character
+            local r = c and c:FindFirstChild("HumanoidRootPart")
+            local h = c and c:FindFirstChildOfClass("Humanoid")
+            if r and h and h.Health > 0 then
+                local d = (r.Position - lr.Position).Magnitude
+                if d < bd and d <= S.dist then best, bd = r, d end
+            end
+        end
+    end
+    return best
+end
+
+local function blocked(target)
+    if not S.wall then return false end
+    local o = Cam.CFrame.Position
+    local dl = target.Position - o
+    local res = WS:Raycast(o, dl.Unit * dl.Magnitude, ray)
+    if not res then return false end
+    if res.Instance:IsDescendantOf(target.Parent) then return false end
+    return res.Distance < dl.Magnitude - 1.5
+end
+
+local function setLock(v)
+    locked = v
+    Tween:Create(GUI.shoot, TweenInfo.new(0.15), {
+        BackgroundColor3 = v and C.accent or C.panel,
+        TextColor3 = v and C.bg or C.text,
+    }):Play()
+    GUI.shoot.Text = v and "LOCK" or "SHOOT"
+    if v then
+        oldCamType = Cam.CameraType
+        Cam.CameraType = Enum.CameraType.Scriptable
+    else
+        Cam.CameraType = oldCamType
+    end
+end
+
+local function aimStep(dt)
+    if not locked then return end
+    if not alive() then setLock(false); return end
+    local t = bestMurderer()
+    if not t then return end
+
+    local pos = t.Position + (t.AssemblyLinearVelocity * S.pred)
+    local cp = Cam.CFrame.Position
+    local dir = (pos - cp).Unit
+    local ang = math.deg(math.acos(math.clamp(Cam.CFrame.LookVector:Dot(dir), -1, 1)))
+    if ang > S.fov * 0.5 then return end
+    if blocked(t) then return end
+
+    Cam.CFrame = Cam.CFrame:Lerp(CFrame.lookAt(cp, pos), math.clamp(dt * S.smooth, 0, 1))
+
+    if ang < 8 and (tick() - lastShot) >= S.cd then
+        lastShot = tick()
+        fireAt(pos)
+    end
+end
+
+--================ UI ================--
+local function gui(parent, name, disp)
+    return new("ScreenGui", {
+        Name = name, ResetOnSpawn = false, IgnoreGuiInset = true,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = disp,
+    }, parent)
+end
+local PG = LP:WaitForChild("PlayerGui")
+local main = gui(PG, "VeniceMM2", 50)
+
+local win = new("Frame", {
+    Size = UDim2.fromOffset(292, 372), Position = UDim2.new(0.5,-146,0.5,-186),
+    BackgroundColor3 = C.bg, BorderSizePixel = 0,
+}, main)
+new("UICorner", {CornerRadius = UDim.new(0,14)}, win)
+new("UIStroke", {Color = C.accent, Thickness = 1, Transparency = 0.55}, win)
+
+local top = new("Frame", {Size = UDim2.new(1,0,0,38), BackgroundColor3 = C.panel, BorderSizePixel = 0}, win)
+new("UICorner", {CornerRadius = UDim.new(0,14)}, top)
+new("Frame", {Size = UDim2.new(1,0,0,14), Position = UDim2.new(0,0,1,-14), BackgroundColor3 = C.panel, BorderSizePixel = 0}, top)
+
+new("TextLabel", {
+    Position = UDim2.new(0,14,0,0), Size = UDim2.new(1,-70,1,0), BackgroundTransparency = 1,
+    Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = C.text,
+    TextXAlignment = Enum.TextXAlignment.Left, Text = "VENICE  ·  MM2",
+}, top)
+
+local closeB = new("TextButton", {
+    Position = UDim2.new(1,-30,0,9), Size = UDim2.fromOffset(20,20),
+    BackgroundColor3 = C.row, Text = "×", Font = Enum.Font.GothamBold,
+    TextSize = 14, TextColor3 = C.dim, AutoButtonColor = false,
+}, top)
+new("UICorner", {CornerRadius = UDim.new(0,6)}, closeB)
+closeB.MouseButton1Click:Connect(function() main.Enabled = not main.Enabled end)
+
+local tabs = new("Frame", {
+    Position = UDim2.new(0,10,0,46), Size = UDim2.new(1,-20,0,26),
+    BackgroundColor3 = C.panel, BorderSizePixel = 0,
+}, win)
+new("UICorner", {CornerRadius = UDim.new(0,8)}, tabs)
+new("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0,4),
+    HorizontalAlignment = Enum.HorizontalAlignment.Center, VerticalAlignment = Enum.VerticalAlignment.Center,
+}, tabs)
+
+local pages, tbtns = {}, {}
+local function page(n)
+    local f = new("ScrollingFrame", {
+        Position = UDim2.new(0,10,0,80), Size = UDim2.new(1,-20,1,-90),
+        BackgroundTransparency = 1, ScrollBarThickness = 3,
+        ScrollBarImageColor3 = C.accent, CanvasSize = UDim2.new(0,0,0,0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, BorderSizePixel = 0,
+    }, win)
+    new("UIListLayout", {Padding = UDim.new(0,6), SortOrder = Enum.SortOrder.LayoutOrder}, f)
+    pages[n] = f
+    local b = new("TextButton", {
+        Size = UDim2.new(0.31,0,0,19), BackgroundColor3 = C.row, Text = n,
+        Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = C.dim, AutoButtonColor = false,
+    }, tabs)
+    new("UICorner", {CornerRadius = UDim.new(0,6)}, b)
+    tbtns[n] = b
+    b.MouseButton1Click:Connect(function()
+        for k, pg in pairs(pages) do pg.Visible = (k == n) end
+        for k, tb in pairs(tbtns) do
+            tb.BackgroundColor3 = (k == n) and C.accent or C.row
+            tb.TextColor3 = (k == n) and C.text or C.dim
+        end
+    end)
+    return f
+end
+
+local ord = 0
+local function nx() ord = ord + 1; return ord end
+
+local function tgl(parent, label, def, cb)
+    local r = new("Frame", {Size = UDim2.new(1,-6,0,34), BackgroundColor3 = C.row, BorderSizePixel = 0, LayoutOrder = nx()}, parent)
+    new("UICorner", {CornerRadius = UDim.new(0,8)}, r)
+    new("TextLabel", {
+        Position = UDim2.new(0,10,0,0), Size = UDim2.new(1,-60,1,0), BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = C.text,
+        TextXAlignment = Enum.TextXAlignment.Left, Text = label,
+    }, r)
+    local on = def
+    local b = new("TextButton", {
+        Position = UDim2.new(1,-46,0.5,-11), Size = UDim2.fromOffset(38,22),
+        BackgroundColor3 = on and C.accent or C.panel, Text = "", AutoButtonColor = false,
+    }, r)
+    new("UICorner", {CornerRadius = UDim.new(1,0)}, b)
+    local k = new("Frame", {
+        Position = on and UDim2.new(1,-18,0,3) or UDim2.new(0,3,0,3),
+        Size = UDim2.fromOffset(16,16), BackgroundColor3 = C.text, BorderSizePixel = 0,
+    }, b)
+    new("UICorner", {CornerRadius = UDim.new(1,0)}, k)
+    b.MouseButton1Click:Connect(function()
+        on = not on
+        Tween:Create(b, TweenInfo.new(0.13), {BackgroundColor3 = on and C.accent or C.panel}):Play()
+        Tween:Create(k, TweenInfo.new(0.13), {Position = on and UDim2.new(1,-18,0,3) or UDim2.new(0,3,0,3)}):Play()
+        if cb then cb(on) end
+    end)
+end
+
+local function sld(parent, label, min, max, def, cb)
+    local r = new("Frame", {Size = UDim2.new(1,-6,0,44), BackgroundColor3 = C.row, BorderSizePixel = 0, LayoutOrder = nx()}, parent)
+    new("UICorner", {CornerRadius = UDim.new(0,8)}, r)
+    new("TextLabel", {
+        Position = UDim2.new(0,10,0,4), Size = UDim2.new(1,-60,0,16), BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = C.text,
+        TextXAlignment = Enum.TextXAlignment.Left, Text = label,
+    }, r)
+    local vl = new("TextLabel", {
+        Position = UDim2.new(1,-54,0,4), Size = UDim2.fromOffset(44,16), BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = C.accent,
+        TextXAlignment = Enum.TextXAlignment.Right, Text = tostring(def),
+    }, r)
+    local tr = new("Frame", {
+        Position = UDim2.new(0,10,1,-15), Size = UDim2.new(1,-20,0,5),
+        BackgroundColor3 = C.panel, BorderSizePixel = 0, Active = true,
+    }, r)
+    new("UICorner", {CornerRadius = UDim.new(1,0)}, tr)
+    local fl = new("Frame", {Size = UDim2.new(0,0,1,0), BackgroundColor3 = C.accent, BorderSizePixel = 0}, tr)
+    new("UICorner", {CornerRadius = UDim.new(1,0)}, fl)
+    local kn = new("Frame", {
+        Size = UDim2.fromOffset(14,14), AnchorPoint = Vector2.new(0.5,0.5),
+        Position = UDim2.new(0,0,0.5,0), BackgroundColor3 = C.text, BorderSizePixel = 0, Active = true,
+    }, tr)
+    new("UICorner", {CornerRadius = UDim.new(1,0)}, kn)
+    local drag
+    local function set(v)
+        local p = (v - min) / (max - min)
+        fl.Size = UDim2.new(p,0,1,0); kn.Position = UDim2.new(p,0,0.5,0)
+        vl.Text = (max <= 5) and string.format("%.2f", v) or tostring(math.floor(v + 0.5))
+        if cb then cb(v) end
+    end
+    local function at(x)
+        local p = math.clamp((x - tr.AbsolutePosition.X) / tr.AbsoluteSize.X, 0, 1)
+        local v = min + (max - min) * p
+        set((max <= 5) and math.floor(v * 100 + 0.5) / 100 or math.floor(v + 0.5))
+    end
+    conn(tr.InputBegan, function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            drag = true; at(i.Position.X)
+        end
+    end)
+    conn(UIS.InputChanged, function(i)
+        if drag and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then at(i.Position.X) end
+    end)
+    conn(UIS.InputEnded, function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then drag = false end
+    end)
+    set(def)
+end
+
+local function btn(parent, label, col, cb)
+    local b = new("TextButton", {
+        Size = UDim2.new(1,-6,0,30), BackgroundColor3 = col, Text = label,
+        Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = C.text,
+        AutoButtonColor = false, LayoutOrder = nx(),
+    }, parent)
+    new("UICorner", {CornerRadius = UDim.new(0,8)}, b)
+    b.MouseButton1Click:Connect(cb)
+end
+
+local p1 = page("ESP")
+tgl(p1, "ESP activo (todo en uno)", true, function(v) S.esp = v; rebuild() end)
+sld(p1, "Distancia máxima", 50, 1500, S.dist, function(v) S.dist = v
+    for _, st in pairs(espStore) do if st.bb then st.bb.MaxDistance = v end end
+end)
+
+local p2 = page("DISPARO")
+tgl(p2, "Chequeo de paredes", false, function(v) S.wall = v end)
+tgl(p2, "Recoger pistola del suelo", true, function(v) S.autoGrab = v end)
+sld(p2, "Cooldown", 0.15, 1.5, S.cd, function(v) S.cd = v end)
+sld(p2, "Predicción", 0, 0.4, S.pred, function(v) S.pred = v end)
+sld(p2, "FOV", 30, 180, S.fov, function(v) S.fov = v end)
+sld(p2, "Suavizado", 4, 40, S.smooth, function(v) S.smooth = v end)
+
+local p3 = page("EXTRA")
+sld(p3, "WalkSpeed", 16, 200, 16, function(v)
+    local h = char() and char():FindFirstChildOfClass("Humanoid")
+    if h then h.WalkSpeed = v end
+end)
+local infJump = false
+tgl(p3, "Salto infinito", false, function(v) infJump = v end)
+btn(p3, "Reset personaje", C.row, function() pcall(function() char():BreakJoints() end) end)
+btn(p3, "Rejoin", C.row, function() pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LP) end) end)
+btn(p3, "Desinstalar", C.red, function() _G.VeniceMM2.Unload() end)
+
+for k, pg in pairs(pages) do pg.Visible = (k == "ESP") end
+for k, tb in pairs(tbtns) do
+    if k == "ESP" then tb.BackgroundColor3 = C.accent; tb.TextColor3 = C.text end
+end
+
+--================ BOTONES FLOTANTES (arrastrables) ================--
+local fgui = gui(PG, "VeniceMM2Float", 60)
+local box = new("Frame", {
+    Size = UDim2.fromOffset(88, 140), Position = UDim2.new(0,18,0.5,-70),
+    BackgroundTransparency = 1,
+}, fgui)
+new("UIListLayout", {Padding = UDim.new(0,8), HorizontalAlignment = Enum.HorizontalAlignment.Center}, box)
+
+local shootB = new("TextButton", {
+    Size = UDim2.fromOffset(88,88), BackgroundColor3 = C.panel, Text = "SHOOT",
+    Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = C.text, AutoButtonColor = false,
+}, box)
+new("UICorner", {CornerRadius = UDim.new(1,0)}, shootB)
+new("UIStroke", {Color = C.accent, Thickness = 2, Transparency = 0.3}, shootB)
+
+local espB = new("TextButton", {
+    Size = UDim2.fromOffset(48,48), BackgroundColor3 = C.panel, Text = "ESP",
+    Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = C.green, AutoButtonColor = false,
+}, box)
+new("UICorner", {CornerRadius = UDim.new(1,0)}, espB)
+new("UIStroke", {Color = C.green, Thickness = 1, Transparency = 0.4}, espB)
+
+GUI = {shoot = shootB}
+
+local function draggable(handle, onClick)
+    local dr, st, org, mv
+    handle.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dr, st, org, mv = true, i.Position, box.Position, 0
+        end
+    end)
+    conn(UIS.InputChanged, function(i)
+        if not dr then return end
+        if i.UserInputType ~= Enum.UserInputType.MouseMovement and i.UserInputType ~= Enum.UserInputType.Touch then return end
+        local d = i.Position - st
+        mv = math.max(mv, d.Magnitude)
+        local vp = Cam.ViewportSize
+        box.Position = UDim2.fromOffset(
+            math.clamp(org.X.Offset + d.X, 0, math.max(0, vp.X - box.AbsoluteSize.X)),
+            math.clamp(org.Y.Offset + d.Y, 0, math.max(0, vp.Y - box.AbsoluteSize.Y))
+        )
+    end)
+    conn(UIS.InputEnded, function(i)
+        if not dr then return end
+        if i.UserInputType ~= Enum.UserInputType.MouseButton1 and i.UserInputType ~= Enum.UserInputType.Touch then return end
+        dr = false
+        if mv < 12 and onClick then onClick() end
+    end)
+end
+
+draggable(shootB, function() setLock(not locked) end)
+draggable(espB, function()
+    S.esp = not S.esp
+    rebuild()
+    espB.TextColor3 = S.esp and C.green or C.dim
+end)
+
+--================ EVENTOS ================--
+local function hook(p)
+    if p == LP then return end
+    conn(p.CharacterAdded, function()
+        task.wait(0.6); roleCache[p] = nil; if S.esp then buildESP(p) end
+    end)
+    conn(p.CharacterRemoving, function() clearESP(p) end)
+    if p.Character and S.esp then buildESP(p) end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do hook(p) end
+conn(Players.PlayerAdded, hook)
+conn(Players.PlayerRemoving, function(p) clearESP(p); roleCache[p] = nil end)
+conn(LP.CharacterAdded, function()
+    task.wait(0.9); roleCache = {}; rebuild(); if locked then setLock(false) end
+end)
+conn(UIS.JumpRequest, function()
+    if not infJump then return end
+    local h = char() and char():FindFirstChildOfClass("Humanoid")
+    if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+end)
+
+--================ LOOPS ================--
+local rt, et = 0, 0
+conn(Run.RenderStepped, function(dt)
+    if unloaded then return end
+
+    rt = rt + dt
+    if rt >= 0.5 then rt = 0; roleCache = {}; refreshRay() end
+
+    et = et + dt
+    if et >= 0.15 and S.esp then
+        et = 0
+        local lr = hrp()
+        for p, st in pairs(espStore) do
+            local c = p.Character
+            local r = c and c:FindFirstChild("HumanoidRootPart")
+            if lr and r then
+                local d = math.floor((r.Position - lr.Position).Magnitude)
+                st.info.Text = string.format("%s · %dm", p.Name, d)
+                local vis = d <= S.dist
+                if st.beam then st.beam.Enabled = vis end
+                if st.bb then st.bb.Enabled = vis end
+            else
+                clearESP(p)
+            end
+        end
+    end
+
+    -- efecto pulso en el murder
+    local pulse = 0.45 + (math.sin(tick() * 5) * 0.28)
+    for _, hl in pairs(pulses) do
+        hl.FillTransparency = pulse
+        hl.OutlineTransparency = math.max(0, pulse - 0.35)
+    end
+
+    aimStep(dt)
+end)
+
+function _G.VeniceMM2.Unload()
+    unloaded = true
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    for p in pairs(espStore) do clearESP(p) end
+    Cam.CameraType = oldCamType
+    pcall(function() main:Destroy() end)
+    pcall(function() fgui:Destroy() end)
+    _G.VeniceMM2 = nil
+end
